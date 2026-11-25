@@ -45,460 +45,9 @@ Arduino에서 받은 데이터는 p5.js를 통해 약 20초 간격으로 ThingSp
 
 ---
 
-## 3. 회로 구성
 
-### LED
 
-```text
-Arduino D13
-    ↓
-저항
-    ↓
-LED (+)
-
-LED (-)
-    ↓
-GND
-```
-
-### 가변저항
-
-```text
-한쪽 핀   → 5V
-가운데 핀 → A0
-반대쪽 핀 → GND
-```
-
-### NTC 온도센서
-
-2핀 10kΩ NTC 서미스터와 10kΩ 저항을 사용하여 전압 분배 회로를 구성하였다.
-
-```text
-5V
- │
-[10kΩ NTC]
- │
- ├──── A1
- │
-[10kΩ 저항]
- │
-GND
-```
-
-브레드보드에서는 서미스터의 한쪽 다리, A1 선, 10kΩ 저항의 한쪽 다리가 같은 연결 지점에 위치하도록 구성하였다.
-
----
-
-## 4. Arduino 코드
-
-Arduino는 가변저항 값과 온도값을 Serial로 p5.js에 전송하고, p5.js로부터 `ON`, `OFF` 명령을 받아 LED를 제어한다.
-
-```cpp
-#include <math.h>
-
-const int LED_PIN  = 13;
-const int POT_PIN  = A0;
-const int TEMP_PIN = A1;
-
-// 10kΩ NTC 기준
-const float R_FIXED = 10000.0;
-const float R0      = 10000.0;
-const float BETA    = 3950.0;
-const float T0      = 298.15;
-
-unsigned long previous = 0;
-
-void setup() {
-  Serial.begin(9600);
-
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
-}
-
-void loop() {
-
-  // 센서값 전송
-  if (millis() - previous >= 200) {
-    previous = millis();
-
-    // 가변저항
-    int potValue = analogRead(POT_PIN);
-
-    Serial.print("POT:");
-    Serial.println(potValue);
-
-
-    // 온도센서
-    int raw = analogRead(TEMP_PIN);
-
-    if (raw > 0 && raw < 1023) {
-
-      float resistance =
-        R_FIXED * raw / (1023.0 - raw);
-
-      float temperatureK =
-        1.0 /
-        (
-          (1.0 / T0) +
-          log(resistance / R0) / BETA
-        );
-
-      float temperatureC =
-        temperatureK - 273.15;
-
-      Serial.print("TEMP:");
-      Serial.println(temperatureC, 1);
-    }
-  }
-
-
-  // p5.js 명령 수신
-  if (Serial.available()) {
-
-    String command =
-      Serial.readStringUntil('\n');
-
-    command.trim();
-
-    if (command == "ON") {
-      digitalWrite(LED_PIN, HIGH);
-      Serial.println("LED: ON");
-    }
-
-    else if (command == "OFF") {
-      digitalWrite(LED_PIN, LOW);
-      Serial.println("LED: OFF");
-    }
-  }
-}
-```
-
----
-
-## 5. p5.js 코드
-
-p5.js에서는 Arduino로부터 다음과 같은 데이터를 받는다.
-
-```text
-POT:523
-TEMP:27.4
-LED: ON
-LED: OFF
-```
-
-받은 값은 화면에 표시하고 ThingSpeak의 Field 1~3에 업로드한다.
-
-> 실제 GitHub에 올릴 때는 ThingSpeak Write API Key를 그대로 공개하지 않도록 주의한다.
-
-```javascript
-let serial, connectButton;
-
-let ledOn = false;
-let potValue = 0;
-let temperature = 0;
-
-let statusText = 'Arduino를 연결해 주세요.';
-let serialMessage = '아직 없음';
-
-
-// ThingSpeak 설정
-const APIKey = "YOUR_WRITE_API_KEY";
-
-const urlBase =
-  "https://api.thingspeak.com/update.json?api_key=" +
-  APIKey;
-
-const updateInterval = 20000;
-
-let nextUpdateTime = 0;
-let dataChanged = false;
-let sending = false;
-
-
-function setup() {
-  createCanvas(600, 450);
-  textFont('sans-serif');
-
-  serial = new SerialHelper(
-    9600,
-    receiveLine,
-    showStatus
-  );
-
-  connectButton =
-    createButton('Arduino 연결 / 해제');
-
-  connectButton.mousePressed(
-    () => serial.toggle()
-  );
-}
-
-
-function draw() {
-  background(242, 246, 250);
-
-  fill(25, 40, 60);
-  noStroke();
-  textAlign(CENTER);
-
-  textSize(24);
-  text(
-    'Arduino Uno R3 · ThingSpeak',
-    width / 2,
-    36
-  );
-
-  textSize(14);
-  text(
-    statusText,
-    width / 2,
-    66
-  );
-
-
-  // LED 상태
-  fill(
-    ledOn
-      ? '#22c55e'
-      : '#64748b'
-  );
-
-  circle(150, 170, 100);
-
-  fill(255);
-  textSize(20);
-
-  text(
-    ledOn ? 'ON' : 'OFF',
-    150,
-    177
-  );
-
-
-  // 가변저항
-  fill(25, 40, 60);
-  textSize(16);
-  text('가변저항 A0', 420, 105);
-
-  fill('#dbe3ed');
-  rect(310, 125, 220, 35, 10);
-
-  fill('#3b82f6');
-  rect(
-    310,
-    125,
-    map(potValue, 0, 1023, 0, 220),
-    35,
-    10
-  );
-
-  fill(25, 40, 60);
-  textSize(18);
-
-  text(
-    potValue + ' / 1023',
-    420,
-    190
-  );
-
-
-  // 온도
-  textSize(17);
-  text(
-    'LED Temperature',
-    420,
-    245
-  );
-
-  textSize(28);
-
-  text(
-    temperature.toFixed(1) + ' °C',
-    420,
-    285
-  );
-
-
-  textSize(13);
-
-  text(
-    'from Arduino : ' + serialMessage,
-    width / 2,
-    380
-  );
-
-
-  updateIoTchannel();
-}
-
-
-// LED ON/OFF
-async function mousePressed() {
-
-  if (
-    dist(
-      mouseX,
-      mouseY,
-      150,
-      170
-    ) > 50
-  ) return;
-
-  const next = !ledOn;
-
-  if (
-    await serial.send(
-      next ? 'ON' : 'OFF'
-    )
-  ) {
-
-    ledOn = next;
-    dataChanged = true;
-    updateIoTchannel();
-  }
-}
-
-
-// Arduino 데이터 수신
-function receiveLine(line) {
-
-  const oldPot = potValue;
-  const oldLed = ledOn;
-  const oldTemp = temperature;
-
-  const message =
-    line.trim().toUpperCase();
-
-  serialMessage = message;
-
-
-  if (
-    message === 'LED: ON' ||
-    message === 'ON'
-  ) {
-    ledOn = true;
-  }
-
-  else if (
-    message === 'LED: OFF' ||
-    message === 'OFF'
-  ) {
-    ledOn = false;
-  }
-
-  else if (
-    message.startsWith('POT:')
-  ) {
-    let value =
-      Number(message.substring(4));
-
-    if (!isNaN(value)) {
-      potValue =
-        constrain(value, 0, 1023);
-    }
-  }
-
-  else if (
-    message.startsWith('TEMP:')
-  ) {
-    let value =
-      Number(message.substring(5));
-
-    if (!isNaN(value)) {
-      temperature = value;
-    }
-  }
-
-
-  if (
-    potValue !== oldPot ||
-    ledOn !== oldLed ||
-    temperature !== oldTemp
-  ) {
-
-    dataChanged = true;
-    updateIoTchannel();
-  }
-}
-
-
-// ThingSpeak 전송
-function updateIoTchannel() {
-
-  if (!dataChanged) return;
-  if (sending) return;
-  if (millis() < nextUpdateTime) return;
-
-  const ledValue =
-    ledOn ? 1 : 0;
-
-  const url =
-    urlBase +
-    '&field1=' + potValue +
-    '&field2=' + ledValue +
-    '&field3=' + temperature.toFixed(1);
-
-  sending = true;
-  dataChanged = false;
-
-  loadJSON(
-    url,
-    updateDone,
-    updateFailed
-  );
-}
-
-
-function updateDone(data) {
-
-  if (
-    !data ||
-    !(data.entry_id > 0)
-  ) {
-    updateFailed(
-      'ThingSpeak 기록 거부'
-    );
-    return;
-  }
-
-  console.log(
-    'ThingSpeak 기록 성공:',
-    data.entry_id
-  );
-
-  nextUpdateTime =
-    millis() +
-    updateInterval;
-
-  sending = false;
-}
-
-
-function updateFailed(error) {
-
-  console.warn(
-    'ThingSpeak 기록 실패',
-    error
-  );
-
-  dataChanged = true;
-
-  nextUpdateTime =
-    millis() +
-    updateInterval;
-
-  sending = false;
-}
-
-
-function showStatus(message) {
-  statusText = message;
-}
-```
-
----
-
-## 6. ThingSpeak React 설정
+## 3. ThingSpeak React 설정
 
 LED 온도가 일정 값 이상이 되면 MATLAB Analysis가 실행되도록 React를 설정하였다.
 
@@ -535,9 +84,14 @@ Run action only the first time the condition is met
 
 온도가 계속 50℃ 이상일 때마다 이메일이 반복해서 오는 것을 방지하기 위해 처음 조건을 만족했을 때만 실행하도록 하였다.
 
+
+<img width="641" height="539" alt="APPs_React" src="https://github.com/user-attachments/assets/9f40ef3f-352f-4c84-afaf-6279b63cbd4b" />
+
+
+
 ---
 
-## 7. MATLAB Analysis 이메일 알림
+## 4. MATLAB Analysis 이메일 알림
 
 ThingSpeak의 Alerts API를 사용하여 계정 이메일로 경고 메시지를 전송하였다.
 
@@ -568,9 +122,12 @@ end
 
 직접 `Save and Run`을 실행하여 이메일이 정상적으로 오는 것을 확인한 후 React와 연결하였다.
 
+<img width="624" height="798" alt="ThingHTTP" src="https://github.com/user-attachments/assets/bdc7e185-af3e-481e-af49-d00c72df12f2" />
+
+
 ---
 
-## 8. 이메일 알림 동작
+## 5. 이메일 알림 동작
 
 최종 동작은 다음과 같다.
 
@@ -603,9 +160,14 @@ Field 3 = 55℃
 → 이메일 발송
 ```
 
+<img width="1080" height="1575" alt="image" src="https://github.com/user-attachments/assets/366b9461-ab9c-40ce-8551-d7ec69fbe4c0" />
+
+
+
+
 ---
 
-## 9. 문제 해결 과정
+## 6. 문제 해결 과정
 
 ### 1. 온도값이 비정상적으로 출력되는 문제
 
@@ -669,7 +231,7 @@ Run action only the first time the condition is met
 
 ---
 
-## 10. 고찰
+## 7. 고찰
 
 처음에는 LED의 온도를 ThingSpeak에 바로 전송하면 쉽게 알림을 만들 수 있을 것이라고 생각했지만, 실제로는 온도값을 얻기 위해 별도의 온도센서가 필요했다.
 
